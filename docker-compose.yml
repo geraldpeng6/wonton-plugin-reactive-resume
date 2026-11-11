@@ -65,7 +65,7 @@ services:
 x-wonton:
   spec: "0.11"
   id: me.rxresu.resume
-  version: 0.1.0
+  version: 0.1.1
   kind: app
   title: { zh: 简历制作（Reactive Resume）, en: Resume Builder (Reactive Resume) }
   description:
@@ -105,8 +105,8 @@ x-wonton:
 
       AI features (job-search assistant, autofill) are off by default; resume data stays at home.
   release_notes:
-    zh: 首个版本：Reactive Resume v6.1.0，登录走云吞账号。
-    en: "Initial release: Reactive Resume v6.1.0, signed in through your Wonton account."
+    zh: 更新截图：换成中文示例简历的界面预览。
+    en: "Updated screenshots: Chinese sample resume previews."
   webui:
     service: app
     port: 3000
