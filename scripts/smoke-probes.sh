@@ -5,8 +5,8 @@
 # 登录页的按钮那里停住（要人点），所以探针自己把 OIDC 链走完：
 #   核心会话 → 应用 POST /api/auth/sign-in/social 拿 authorize 地址 → 带着核心会话跟完
 #   Hydra → 应用回调（code 换会话，Cookie 落在 $SMOKE_JAR）→ get-session 断言账号。
-# 工具接口认应用里生成的 API 密钥（x-api-key）：before_mcp 用应用会话建一把，经核心的密钥接口
-# 填进插件的 api_key 密钥，等总线把它带给应用。简历数据和 API 密钥都随数据保留，重装后还在。
+# 工具接口（mcp）没声明：应用的 API 密钥只能由登录后的浏览器生成，核心的 MCP 头引用不了
+# input 密钥（安装时就报错），见 PR 的「底座的问题」。
 #
 # 变量：SMOKE_WEB_URL 是应用的网页入口（套件已去尾斜杠，带 webui.path=/auth）；
 #       拼 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port），别直接接在 SMOKE_WEB_URL 后面。
@@ -53,36 +53,6 @@ identity_check() { # OIDC 建的账号要用主人的用户名和邮箱，说明
     '.user.username == $u and .user.email == $e' <<<"$me" >/dev/null 2>&1 ||
     { echo "应用的账号不是主人（$SMOKE_OWNER / $SMOKE_OWNER_EMAIL）：$(head -c 300 <<<"$me")"; return 1; }
 }
-
-before_mcp() { # 用应用会话建 API 密钥，填进核心的 api_key 密钥，再等总线把它带给应用
-  local resp key body tools
-  _rr_app_login || return 1
-  resp="$(_rr_curl POST "$SMOKE_WEB_ORIGIN/api/auth/api-key/create" \
-    -H 'Content-Type: application/json' --data '{"name":"wonton-smoke"}')" ||
-    { echo "建 API 密钥失败"; return 1; }
-  key="$(jq -r '.key // .apiKey // empty' <<<"$resp" 2>/dev/null)"
-  [[ -n "$key" && "$key" != null ]] || { echo "API 密钥响应里没有 key：$(head -c 300 <<<"$resp")"; return 1; }
-  body="$(jq -nc --arg v "$key" '{value:$v}')"
-  resp="$(smoke_api PUT "/_wonton/api/plugins/$SMOKE_PLUGIN_ID/secrets/api_key" \
-    -H 'Content-Type: application/json' -d "$body")" ||
-    { echo "填 api_key 密钥失败：$(head -c 300 <<<"$resp")"; return 1; }
-  # 核心按核对节奏解析 MCP 请求头，等工具出现在总线上（最多 3 分钟）。
-  for _ in $(seq 1 36); do
-    if tools="$(mcp list 2>/dev/null)" && jq -e --arg s "${SMOKE_SLUG:?}" \
-      'any(.[]?; (.name // "") | startswith($s + "__"))' <<<"$tools" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 5
-  done
-  echo "等了 180s 总线上还没有本插件的工具（api_key 没被带上？）"
-  return 1
-}
-
-# 工具接口认密钥后就能看到 before_mcp 刚建的简历。
-# shellcheck disable=SC2034  # MCP_TOOL、MCP_ARGS 由探针套件读取
-MCP_TOOL=list_resumes MCP_ARGS='{}'
-mcp_assert() { jq -e 'type == "array" and length >= 1' >/dev/null 2>&1 ||
-  { echo "list_resumes 没返回非空列表：$(head -c 200)"; return 1; }; }
 
 # ---------- 数据钩子（e2e 六项冒烟用）----------
 # 简历存 PostgreSQL，随数据目录保留：data_write 建一份带随机标记的简历，data_check 读回名字。

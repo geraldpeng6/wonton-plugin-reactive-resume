@@ -63,7 +63,7 @@ services:
       start_interval: 2s
 
 x-wonton:
-  spec: "0.11"
+  spec: "0.12"
   id: me.rxresu.resume
   version: 0.1.0
   kind: app
@@ -88,8 +88,8 @@ x-wonton:
 
       家里每个人都用自己的账号，各写各的简历，互不可见。做完想给谁看，就开一个分享链接；不想公开了随时关掉。
 
-      登录用云吞账号，第一次打开会自动建号。助手可以经云吞的工具接口读写你的简历（先在应用里生成一把 API 密钥填到插件密钥里）；
-      编辑器里导出 PDF 在浏览器里完成，不需要联网；服务器端的 PDF 和「按网址导入职位」要用到外网，不开外网时 PDF 会退回内置字体。
+      登录用云吞账号，第一次打开会自动建号。编辑器里导出 PDF 在浏览器里完成，不需要联网；接口上的服务器端 PDF
+      导出要访问外网取字体，插件默认不出网时这条路会失败。
 
       AI 相关功能（求职助手、自动填写）默认关闭，简历数据只存在家里。
     en: |
@@ -99,18 +99,17 @@ x-wonton:
       Everyone in the household signs in with their own account and keeps their own resumes. Share any resume by link and
       turn the link off whenever you like.
 
-      You sign in with your Wonton account; the first visit creates it. An assistant can read and write your resumes through
-      Wonton's tool interface (generate an API key in the app and paste it into the plugin's secrets). Exporting a PDF in the
-      editor happens in your browser and needs no internet; server-side PDFs and "import a job posting by URL" do reach the
-      internet, and PDFs fall back to built-in fonts without it.
+      You sign in with your Wonton account; the first visit creates it. Exporting a PDF in the editor happens in your
+      browser and needs no internet; the API's server-side PDF export fetches fonts from the internet and fails while
+      the plugin has no network access (the default).
 
       AI features (job-search assistant, autofill) are off by default; resume data stays at home.
   release_notes:
     zh: 首个版本：Reactive Resume v6.1.0，登录走云吞账号。
     en: "Initial release: Reactive Resume v6.1.0, signed in through your Wonton account."
   setup:
-    zh: 打开插件网页即可用（云吞登录自动建号）。想让家里的助手读写简历：先在插件里登录，到「设置 → AI 与开发者 → API 密钥」新建一把，再把它填进云吞这个插件的「Reactive Resume API 密钥」里。
-    en: Open the plugin page and sign in with Wonton to start. To let your household assistant work on resumes, sign in, create a key under "Settings → AI & developer → API keys" and paste it into the plugin's "Reactive Resume API key" secret in Wonton.
+    zh: 打开插件网页即可用（云吞登录自动建号）。
+    en: Open the plugin page and sign in with Wonton to start.
   webui:
     service: app
     port: 3000
@@ -126,26 +125,11 @@ x-wonton:
       title: { zh: 简历, en: Resumes }
       icon: tabs/resumes.svg
       path: /dashboard
-  mcp:
-    service: app
-    port: 3000
-    path: /mcp
-    transport: streamable-http
-    headers:
-      # 工具接口认的是应用里生成的 API 密钥（用户在网页里生成，见 setup），x-api-key 头带上。
-      x-api-key: "{secret:api_key}"
   secrets:
     db_password:
       generate: { bytes: 32 }
     auth_secret:
       generate: { bytes: 32 }
-    api_key:
-      input:
-        title: { zh: Reactive Resume API 密钥, en: Reactive Resume API key }
-        description:
-          zh: 在插件网页的「设置 → AI 与开发者 → API 密钥」里生成；填了它，云吞里的助手才能读写简历。
-          en: Create it in the plugin under "Settings → AI & developer → API keys"; the assistant can work on resumes only with it.
-        required: false
   permissions: []
   # 官方文档的最低要求：应用 1 GB，和 PostgreSQL 同机时留 2 GB（docs.rxresu.me/self-hosting/docker）。
   # 镜像支持 amd64 和 arm64（docker buildx imagetools inspect）。
