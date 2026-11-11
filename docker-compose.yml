@@ -63,7 +63,7 @@ services:
       start_interval: 2s
 
 x-wonton:
-  spec: "0.12"
+  spec: "0.11"
   id: me.rxresu.resume
   version: 0.1.0
   kind: app
@@ -107,9 +107,6 @@ x-wonton:
   release_notes:
     zh: 首个版本：Reactive Resume v6.1.0，登录走云吞账号。
     en: "Initial release: Reactive Resume v6.1.0, signed in through your Wonton account."
-  setup:
-    zh: 打开插件网页即可用（云吞登录自动建号）。
-    en: Open the plugin page and sign in with Wonton to start.
   webui:
     service: app
     port: 3000
