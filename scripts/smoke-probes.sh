@@ -16,16 +16,16 @@ web_assert() { grep -qi 'reactive resume'; }   # 登录页和登录后的页面�
 _rr_curl() { # <方法> <完整地址> [curl 参数…]：带会话 jar 请求插件网页，输出响应体
   local method="$1" url="$2"
   shift 2
-  curl -sS --noproxy '*' -X "$method" -b "${SMOKE_JAR:?}" -c "${SMOKE_JAR:?}" "$@" "$url"
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -X "$method" -b "${SMOKE_JAR:?}" -c "${SMOKE_JAR:?}" "$@" "$url"
 }
 
 _rr_app_login() { # 建核心会话，再把 OIDC 链走完，$SMOKE_JAR 里落上应用自己的会话
   local base="${SMOKE_BASE:?}" resp url final code
   base="${base%/}"
   # 核心会话：先在核心地址上换令牌，再走一次插件入口，让网关的会话 Cookie 落到插件主机上。
-  curl -sS --noproxy '*' -o /dev/null -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
     --data-urlencode "token=$SMOKE_TOKEN" "$base/_wonton/login" || { echo "核心登录失败"; return 1; }
-  curl -sS --noproxy '*' -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
     -H 'Accept: text/html' "${SMOKE_WEB_URL%/}/" || { echo "插件入口跳转失败"; return 1; }
   # 应用的登录页要人点按钮，探针替它点：POST sign-in/social 拿 authorize 地址。
   resp="$(_rr_curl POST "$SMOKE_WEB_ORIGIN/api/auth/sign-in/social" \
@@ -40,7 +40,7 @@ _rr_app_login() { # 建核心会话，再把 OIDC 链走完，$SMOKE_JAR 里落�
   case "$final" in
     */auth/error* | */auth/login*) echo "OIDC 回调后停在 $final"; return 1 ;;
   esac
-  code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+  code="$(curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -w '%{http_code}' -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
     "$SMOKE_WEB_ORIGIN/api/auth/get-session")"
   [[ "$code" == 200 ]] || { echo "get-session 返回 $code：应用的会话没建立"; return 1; }
 }
