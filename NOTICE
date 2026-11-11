@@ -1,10 +1,16 @@
-图标
-====
+# 图标与商标声明
 
-`icon.svg` 为本仓库原创，按插件规范的线条风格手写，未用图片模型生成。从模板新建的插件换成自己的图标时，这里按实际情况重写。
+## 图标
 
-许可证
-------
+`icon.svg` 原样取自 Reactive Resume 上游仓库的官方图标（未做任何修改）：
+
+- 来源：https://github.com/amruthpillai/reactive-resume/blob/v6.1.0/apps/web/public/favicon.svg
+- 版权所有 © Amruth Pillai，Reactive Resume 按 MIT 许可证发布
+  （https://github.com/amruthpillai/reactive-resume/blob/v6.1.0/LICENSE）。
+- Reactive Resume 和它的标志是 Amruth Pillai 的商标。本插件不是 Reactive Resume 官方出品，
+  也没有得到对方的背书。
+
+## 许可证
 
 MIT License
 

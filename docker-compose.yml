@@ -1,78 +1,154 @@
-# 示例插件：nginx 显示一个网页，向登录的人问好。改成自己的应用见 https://github.com/wontonapp/wonton-docs/blob/main/develop.md#写插件。
+# Reactive Resume（v6）：一个 Node 进程把网页、接口、工具接口和上传文件都从 3000 端口送出去，
+# PDF 由应用自己渲染（编辑器里在浏览器用 WebAssembly，服务器端用内置引擎），v6 起没有无头浏览器服务，
+# 官方自托管文档的推荐形态就是「应用 + PostgreSQL」两个容器（docs.rxresu.me 的 self-hosting/docker）。
+# 上传走应用内置的本地存储（/app/data），文件由应用自己经同一路径发给浏览器，不需要单独的对象存储服务。
+name: reactive-resume
+
 services:
-  web:
-    # 镜像按摘要固定（多架构镜像写清单列表的摘要），标签只给人看。
-    image: nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+  db:
+    # 上游官方 postgres:18（自托管文档推荐的大版本），按清单列表（index）的摘要固定。
+    image: postgres:18@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+    restart: unless-stopped
     environment:
-      # 网关代登录：SSI 回显的 Remote-User 只信核心带来的。官方镜像启动时对 templates 目录里的
-      # *.template 做 envsubst，把下面的地址换进 nginx 配置（见 web/default.conf.template）。
-      WONTON_CORE_ADDRESS: ${WONTON_CORE_ADDRESS}
-    # 包里的文件经 configs 交给容器（核心在启动前写进去），不能用卷挂载。
-    configs:
-      - source: site
-        target: /etc/nginx/templates/default.conf.template
-      - source: page
-        target: /usr/share/nginx/html/index.html
-      - source: tokens
-        target: /usr/share/nginx/html/tokens.css
+      TZ: ${TZ}
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${WONTON_SECRET_DB_PASSWORD}
+    # postgres 18 镜像的数据根目录是 /var/lib/postgresql；镜像入口以 root 起步，自己把数据目录交给 postgres 用户。
+    volumes:
+      - ${WONTON_APP_DATA}/db:/var/lib/postgresql
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      # 镜像自带的官方检查：连得上、库已建好并接受查询。
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "postgres"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
-      start_interval: 1s
+      retries: 10
+      start_period: 60s
+      start_interval: 2s
 
-configs:
-  site:
-    file: web/default.conf.template
-  page:
-    file: web/index.html
-  tokens:
-    file: web/tokens.css
+  app:
+    image: amruthpillai/reactive-resume:v6.1.0@sha256:0dcd0c372e78935ba04c9bb04fa0811177ee7fc4b961ce08acce49e13a1ac2a2
+    restart: unless-stopped
+    # 上游镜像固定以 node（uid 1000）运行；按云吞的规则让容器直接以用户的用户跑，数据目录归同一个用户。
+    user: "${PUID}:${PGID}"
+    environment:
+      TZ: ${TZ}
+      # 网页地址必须和浏览器地址栏完全一致，登录回调和会话 Cookie 都按它拼。
+      APP_URL: ${WONTON_APP_URL}
+      # 库密码是核心生成的十六进制串，只有 URL 安全字符，可以直接拼进连接串。
+      DATABASE_URL: postgresql://postgres:${WONTON_SECRET_DB_PASSWORD}@db:5432/postgres
+      # 会话签名密钥，核心生成；换掉它所有登录作废，所以放密钥里长期不变。
+      AUTH_SECRET: ${WONTON_SECRET_AUTH_SECRET}
+      # 登录走云吞：Better Auth 的 custom OAuth，从发现文档取端点，令牌请求把密钥放表单体
+      # （Better Auth 带 clientSecret 时的默认方式），清单因此写 token_endpoint_auth_method: client_secret_post。
+      OAUTH_PROVIDER_NAME: 云吞
+      OAUTH_CLIENT_ID: ${WONTON_OIDC_CLIENT_ID}
+      OAUTH_CLIENT_SECRET: ${WONTON_OIDC_CLIENT_SECRET}
+      OAUTH_DISCOVERY_URL: ${WONTON_OIDC_ISSUER}/.well-known/openid-configuration
+      # 只留云吞登录：关掉邮箱密码的注册、登录、改密和找回，这些流程都要发信；
+      # 第一次用云吞登录的人自动建号（FLAG_DISABLE_SIGNUPS 不开，家人也能各建各的账号）。
+      FLAG_DISABLE_EMAIL_AUTH: "true"
+    volumes:
+      - ${WONTON_APP_DATA}/data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # 应用自己的健康检查：数据库和存储都可访问才算健康（镜像自带的就是它，这里按官方索引要求写出来）。
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then((r) => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
 
 x-wonton:
-  spec: "0.6"
-  # 换成你自己的：反向域名形式，装上以后不能改。
-  id: app.example.hello
-  version: 0.1.1
+  spec: "0.11"
+  id: me.rxresu.resume
+  version: 0.1.0
   kind: app
-  title: { zh: 你好, en: Hello }
-  description: { zh: 向登录的人问好的示例网页, en: An example page that greets whoever is signed in }
+  title: { zh: 简历制作（Reactive Resume）, en: Resume Builder (Reactive Resume) }
+  description:
+    zh: 在线做一份好看的简历：像用现成模板填空，填好经历挑个模板，就能导出 PDF 去投递。
+    en: >-
+      Build a polished resume online: fill in your experience, pick one of dozens of templates
+      and export a PDF.
   icon: icon.svg
   notices: [NOTICE]
-  screenshots: [screenshots/home.png]
-  author: { name: Example }
-  homepage: https://nginx.org
-  # 应用（这里是 nginx）的许可证；插件包自己的许可证写在仓库的 LICENSE 里。
-  license: BSD-2-Clause
+  screenshots: [screenshots/dashboard.png, screenshots/builder.png]
+  author: { name: Wonton plugin authors }
+  homepage: https://rxresu.me
+  license: MIT
   tags:
-    zh: [工具]
-    en: [Tools]
+    zh: [简历, 求职, 文档]
+    en: [Resume, Job hunting, Documents]
   about:
     zh: |
-      一个示例网页：登录以后，页面会向你问好。新建插件时可以照着改。
+      在家里服务器上做简历：写好教育、工作经历和技能，从几十个现成模板里挑一个，一边编辑一边预览，导出 PDF、Word 或网页链接。
+
+      家里每个人都用自己的账号，各写各的简历，互不可见。做完想给谁看，就开一个分享链接；不想公开了随时关掉。
+
+      登录用云吞账号，第一次打开会自动建号。助手可以经云吞的工具接口读写你的简历（先在应用里生成一把 API 密钥填到插件密钥里）；
+      编辑器里导出 PDF 在浏览器里完成，不需要联网；服务器端的 PDF 和「按网址导入职位」要用到外网，不开外网时 PDF 会退回内置字体。
+
+      AI 相关功能（求职助手、自动填写）默认关闭，简历数据只存在家里。
     en: |
-      An example page: once you are signed in, the page says hello. Copy it as a starting point for a new plugin.
-  release_notes: { zh: 名字和说明更新。, en: Product name and description update. }
+      Make resumes on your home server: write your education, work experience and skills, pick one of dozens of ready-made
+      templates, edit with a live preview, and export to PDF, Word or a share link.
+
+      Everyone in the household signs in with their own account and keeps their own resumes. Share any resume by link and
+      turn the link off whenever you like.
+
+      You sign in with your Wonton account; the first visit creates it. An assistant can read and write your resumes through
+      Wonton's tool interface (generate an API key in the app and paste it into the plugin's secrets). Exporting a PDF in the
+      editor happens in your browser and needs no internet; server-side PDFs and "import a job posting by URL" do reach the
+      internet, and PDFs fall back to built-in fonts without it.
+
+      AI features (job-search assistant, autofill) are off by default; resume data stays at home.
+  release_notes:
+    zh: 首个版本：Reactive Resume v6.1.0，登录走云吞账号。
+    en: "Initial release: Reactive Resume v6.1.0, signed in through your Wonton account."
+  setup:
+    zh: 打开插件网页即可用（云吞登录自动建号）。想让家里的助手读写简历：先在插件里登录，到「设置 → AI 与开发者 → API 密钥」新建一把，再把它填进云吞这个插件的「Reactive Resume API 密钥」里。
+    en: Open the plugin page and sign in with Wonton to start. To let your household assistant work on resumes, sign in, create a key under "Settings → AI & developer → API keys" and paste it into the plugin's "Reactive Resume API key" secret in Wonton.
   webui:
-    service: web
-    port: 80
-    # 示例页回显网关注入的用户名，见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md#网关代登录sso-proxy。
-    sso: proxy
-    proxy:
-      headers:
-        Remote-User: "{user}"
-  # 能放进侧边栏“我的应用”的页面，见 https://github.com/wontonapp/wonton-docs/blob/main/plugin-spec.md#应用页面tabs。放不放由用户决定。
+    service: app
+    port: 3000
+    # 打开网页直接落在登录页：这里只剩「继续使用云吞」一个按钮，已登录的人会被送进简历列表。
+    path: /auth
+    sso: oidc
+    oidc:
+      # 上游固定回调 /api/auth/callback/custom（Better Auth 的 custom provider，docs.rxresu.me/self-hosting/sso）。
+      redirect_paths: [/api/auth/callback/custom]
+      token_endpoint_auth_method: client_secret_post
   tabs:
-    - id: home
-      title: { zh: 主页, en: Home }
-      icon: tabs/home.svg
-      icon_selected: tabs/home-fill.svg
-      path: /
-      # 这个页面没做适配，用默认的 inset：从状态栏下沿开始，页面不用管安全区。
-      # 想让内容从状态栏后面滚过，写 layout: edge-to-edge，并用 --wonton-inset-* 留出系统安全区的位置。
+    - id: resumes
+      title: { zh: 简历, en: Resumes }
+      icon: tabs/resumes.svg
+      path: /dashboard
+  mcp:
+    service: app
+    port: 3000
+    path: /mcp
+    transport: streamable-http
+    headers:
+      # 工具接口认的是应用里生成的 API 密钥（用户在网页里生成，见 setup），x-api-key 头带上。
+      x-api-key: "{secret:api_key}"
+  secrets:
+    db_password:
+      generate: { bytes: 32 }
+    auth_secret:
+      generate: { bytes: 32 }
+    api_key:
+      input:
+        title: { zh: Reactive Resume API 密钥, en: Reactive Resume API key }
+        description:
+          zh: 在插件网页的「设置 → AI 与开发者 → API 密钥」里生成；填了它，云吞里的助手才能读写简历。
+          en: Create it in the plugin under "Settings → AI & developer → API keys"; the assistant can work on resumes only with it.
+        required: false
   permissions: []
-  # 上游 nginx 官方镜像，amd64 和 arm64 都有；上游没写最低内存，按本机空闲实测取整（实测约 24M，取 64M）。
+  # 官方文档的最低要求：应用 1 GB，和 PostgreSQL 同机时留 2 GB（docs.rxresu.me/self-hosting/docker）。
+  # 镜像支持 amd64 和 arm64（docker buildx imagetools inspect）。
   requirements:
     arch: [amd64, arm64]
-    memory: 64M
+    memory: 2G
