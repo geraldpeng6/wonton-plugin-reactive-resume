@@ -16,7 +16,10 @@ web_assert() { grep -qi 'reactive resume'; }   # 登录页和登录后的页面�
 _rr_curl() { # <方法> <完整地址> [curl 参数…]：带会话 jar 请求插件网页，输出响应体
   local method="$1" url="$2"
   shift 2
-  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -X "$method" -b "${SMOKE_JAR:?}" -c "${SMOKE_JAR:?}" "$@" "$url"
+  # 应用（Better Auth）对带 Cookie 的 POST 要求 Origin 属于可信来源；jar 里已有应用会话时必须带上，
+  # 否则 sign-in/social 报 MISSING_OR_NULL_ORIGIN。GET 带着它也无妨。
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -X "$method" -b "${SMOKE_JAR:?}" -c "${SMOKE_JAR:?}" \
+    -H "Origin: ${SMOKE_WEB_ORIGIN%/}" "$@" "$url"
 }
 
 _rr_app_login() { # 建核心会话，再把 OIDC 链走完，$SMOKE_JAR 里落上应用自己的会话
@@ -49,9 +52,11 @@ identity_check() { # OIDC 建的账号要用主人的用户名和邮箱，说明
   local me
   _rr_app_login || return 1
   me="$(_rr_curl GET "$SMOKE_WEB_ORIGIN/api/auth/get-session")" || { echo "get-session 失败"; return 1; }
-  jq -e --arg u "${SMOKE_OWNER:-}" --arg e "${SMOKE_OWNER_EMAIL:-}" \
+  # 核心给应用的 OIDC email 声明是 <用户名>@wonton.internal（规范「sso: proxy」的身份变量表），
+  # 不是 WONTON_OWNER_EMAIL（那是给 notify 用的收件地址，实例域名）。
+  jq -e --arg u "${SMOKE_OWNER:-}" --arg e "${SMOKE_OWNER}@wonton.internal" \
     '.user.username == $u and .user.email == $e' <<<"$me" >/dev/null 2>&1 ||
-    { echo "应用的账号不是主人（$SMOKE_OWNER / $SMOKE_OWNER_EMAIL）：$(head -c 300 <<<"$me")"; return 1; }
+    { echo "应用的账号不是主人（$SMOKE_OWNER / ${SMOKE_OWNER}@wonton.internal）：$(head -c 300 <<<"$me")"; return 1; }
 }
 
 # ---------- 数据钩子（e2e 六项冒烟用）----------
@@ -66,7 +71,7 @@ marker_file() { # SMOKE_STATE 是文件不是目录，标记放同名的 .d 目�
 _rr_create_resume() { # <名字>：经应用自己的 REST 建一份简历，输出 id
   local resp id
   resp="$(_rr_curl POST "$SMOKE_WEB_ORIGIN/api/openapi/resumes" -H 'Content-Type: application/json' \
-    --data "$(jq -nc --arg n "$1" '{name:$n}')")" || { echo "建简历失败"; return 1; }
+    --data "$(jq -nc --arg n "$1" '{name:$n, tags:[]}')")" || { echo "建简历失败"; return 1; }
   id="$(jq -r 'if type == "string" then . else (.id // .output // empty) end' <<<"$resp" 2>/dev/null)"
   [[ -n "$id" && "$id" != null ]] || { echo "建简历没返回 id：$(head -c 300 <<<"$resp")"; return 1; }
   printf '%s' "$id"
