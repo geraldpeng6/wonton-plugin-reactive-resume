@@ -1,43 +1,32 @@
-# 云吞插件模板
+# 简历制作（Reactive Resume）
 
-开发流程见[插件开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md)。
+在家里服务器上做一份好看的简历。填好教育、工作经历和技能，从几十个现成模板里挑一个，一边编辑一边预览，导出 PDF、Word，或者开一个分享链接发给招聘方。家里每个人有自己的账号，各写各的简历，互不可见。
 
-这是一个能安装的示例插件 `app.example.hello`：使用 nginx 官方镜像显示问候页，经网关的 `sso: proxy` 注入用户名，页面显示“你好，<用户名>”。示例没有应用账号、持久化数据或 MCP 工具。
+登录用云吞账号：第一次打开插件网页会自动建号，不用另外注册。
 
-## 示例文件
+## 怎么用
 
-| 路径 | 内容 |
-| --- | --- |
-| `docker-compose.yml` | 示例清单、nginx 服务和三个 `configs` |
-| `web/default.conf.template` | nginx 配置，启用 SSI 回显用户名并提供健康检查入口；只放行来自核心地址（`${WONTON_CORE_ADDRESS}`）的请求，其余来源 403 |
-| `web/index.html` | 问候页 |
-| `web/tokens.css` | 页面主题变量的后备值 |
-| `tabs/` | 示例主页的应用页面图标 |
-| `screenshots/home.png` | 商店详情页的示例截图 |
-| `scripts/smoke-probes.sh` | 检查真实页面和网关注入身份的插件探针 |
+1. 在云吞里打开「简历制作」，云吞登录后直接进简历列表。
+2. 新建一份简历，挑一个模板开始写；顶部可以随时预览和切换模板。
+3. 写完在编辑器里导出 PDF（浏览器里完成，不需要外网），或在「分享」里开一个链接。
 
-从模板创建自己的插件后，替换示例清单、网页和素材；具体步骤见[写插件](https://github.com/wontonapp/wonton-docs/blob/main/develop.md#写插件)。
+## 数据存在哪
 
-## 对着别的栈跑探针
+- 简历内容存在插件数据目录的 PostgreSQL 数据库里，上传的图片和附件存在 `data/` 子目录。
+- 插件升级、重装（保留数据）都不会丢；在云吞里卸载时选择删除数据才会清掉。
 
-`probes`、`api`、`session` 按 `.wonton/.env` 的 `WONTON_BASE_DOMAIN` 拼核心地址，`up` 起的栈自己写这个键。插件装进别人的栈、或者对着已有环境排查时，把那套栈的基础域名写进 `.wonton/.env`，不要只按实例名猜地址：实例名只是资源名前缀，网关按 Host 认域名，拼错了会回“没有安装”。
+## 备份
 
-```bash
-WONTON_BASE_DOMAIN=wonton.localhost
-```
+备份数据目录即可：里面的 `db/` 是数据库、`data/` 是上传的文件。恢复时把两部分一起放回原处再启动插件。
 
-## 核心镜像
+## 已知限制
 
-检查和冒烟默认用套件里的核心镜像（`ghcr.io/wontonapp/wonton-core:main`）；要固定别的核心镜像，在仓库 Settings → Variables 设 `WONTON_CORE_IMAGE`，手动触发“检查”时填的 `core-image` 输入优先。
+- 求职助手、自动填写这类 AI 功能默认关闭，本插件也不接云吞的模型网关；插件默认不出外网。「按网址导入职位」和接口上的服务器端 PDF 导出需要访问外网——不出外网时导入会失败，服务器端导出会报字体加载不了（编辑器里导出的 PDF 走浏览器，不受影响）。
+- 找回密码、邮箱验证这类流程已随邮箱登录一起关闭；账号用云吞登录，不需要密码。
+- 简历的公开分享链接走插件自己的地址，收到链接的人在云吞外也能打开；不想公开就到「分享」里关掉。
 
-## 更新开发套件
+## 许可与商标
 
-```bash
-scripts/dev.sh kit-update
-```
-
-在从模板新建的插件仓库中更新套件；本仓库是套件源头，执行时只提示并退出。版本、可选引用和自定义脚本约定见[开发指南](https://github.com/wontonapp/wonton-docs/blob/main/develop.md#更新开发套件)。
-
-## 图标
-
-`icon.svg` 是本仓库原创线条图标，按本仓库 MIT 许可证分发，见 [NOTICE](NOTICE)。
+- 界面图标原样使用 Reactive Resume 的官方标志，版权归 Amruth Pillai 所有，Reactive Resume 是其商标；本插件不是官方出品，详见 [NOTICE](NOTICE)。
+- 上游应用按 MIT 许可证发布（https://github.com/amruthpillai/reactive-resume ）；插件包自身按 [LICENSE](LICENSE)（MIT）分发。
+- 插件使用的镜像：`amruthpillai/reactive-resume:v6.1.0`（MIT）、`postgres:18`（PostgreSQL License，仓库 docker-library/postgres）。

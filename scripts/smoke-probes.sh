@@ -1,61 +1,102 @@
 # shellcheck shell=bash
 # scripts/smoke.sh 的一项一项探测，跟着插件走。没写的项会 FAIL 并给出写法，不会默认放行。
 #
-# 变量别叫 state：shellcheck 把这份文件连着 probes.sh 一起分析，probes.sh 自己也读一个 dev.sh 提供的 state；
-# 子壳体函数（fn() ( … )）里给 state 赋值，SC2031 就报在 probes.sh 上，CI 红。
+# Reactive Resume：sso=oidc（Better Auth custom provider），应用自己管会话，网关的登录跳转在
+# 登录页的按钮那里停住（要人点），所以探针自己把 OIDC 链走完：
+#   核心会话 → 应用 POST /api/auth/sign-in/social 拿 authorize 地址 → 带着核心会话跟完
+#   Hydra → 应用回调（code 换会话，Cookie 落在 $SMOKE_JAR）→ get-session 断言账号。
+# 工具接口（mcp）没声明：应用的 API 密钥只能由登录后的浏览器生成，核心的 MCP 头引用不了
+# input 密钥（安装时就报错），见 PR 的「底座的问题」。
 #
-# 变量：SMOKE_WEB_URL 是应用的网页入口（套件已去尾斜杠，但可能带路径，比如 SSO 登录页）；
-#       拼 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port，入口的路径不掺进来），别直接接在 SMOKE_WEB_URL 后面。
-#
-# 页面：web_assert 从标准输入读页面，命中的确是应用的真实页面时返回 0。
-# 身份：identity_check 只证明身份：用应用自己的“当前用户”接口断言认出的是用户管理员，不碰应用里的数据。
-#       数据断言（是否配置过、有几条、内容对不对）全部交给 data_write / data_check：冒烟第 1 项会先装升级
-#       起点写数据，身份探针再断言“数据目录是空的”就会红。接口回字段时也只看类型（如 configured 是布尔、
-#       nodes 是数字），值和条数留给 data_check。
-#       没有用户体系时写 IDENTITY_NA=1，并在 SMOKE_NOTE 里写原因。dweb / web_get 是带用户会话的请求助手，可继续走应用自己的登录链。
-#       SSO 登录跳转不用自己写表单逻辑：dweb --sso 会从清单 webui.path 的入口出发（没写就是 /），提交核心
-#       登录页的 JS 自动表单并跟完重定向，返回的页面已带应用的登录态。
-# 工具：MCP_TOOL 写一个只读工具名（可带插件前缀），MCP_ARGS 是 JSON 参数；mcp_assert 从标准输入读调用结果。
-#       要断言多个工具时改成写 mcp_check；调用前要备数据时写 before_mcp。
-# 通知房间：申请了 notify 的插件把通知交给核心，核心以核心账号发进和主人的“Wonton”私聊。
-#       探针以主人身份读这个房间：probes_owner_room_wait <超时秒> <要找的文字> 等到开始之后发来的、包含这段文字的
-#       消息就返回 0，超时列出看到的最新消息并返回非 0。要先把等待挂到后台再发通知，否则消息可能在等待开始前就到：
-#         room_wait() {
-#           local marker="probe-$RANDOM" url
-#           url="$(docker exec "wonton-$SMOKE_INSTANCE--${SMOKE_PLUGIN_ID//./-}--web" printenv WONTON_NOTIFY_URL)"
-#           probes_owner_room_wait 120 "$marker" & local pid=$!
-#           docker exec "wonton-$SMOKE_INSTANCE--${SMOKE_PLUGIN_ID//./-}--web" wget -q -O /dev/null \
-#             --header 'Content-Type: application/json' --post-data "{\"title\":\"$marker\"}" "$url"
-#           wait "$pid"
-#         }
-#       上面的 web 换成插件里能发 HTTP 的服务；wget 换成那个服务里有的客户端。
-# 数据：合并前要验证“升级/重装不丢用户数据”时写 data_write 和 data_check（两个都写才跑）：data_write 用随机标记写
-#       一条数据并把标记原样存进 $SMOKE_STATE，data_check 读回标记去应用里找，对不上就打印看到了什么并返回非 0。
-#       应用不存用户数据时写 DATA_NA=1（两项记 N/A）。
-# 装之前要准备（如先配出口代理）：写 before_install。
+# 变量：SMOKE_WEB_URL 是应用的网页入口（套件已去尾斜杠，带 webui.path=/auth）；
+#       拼 API 路径用 SMOKE_WEB_ORIGIN（只有 scheme://host:port），别直接接在 SMOKE_WEB_URL 后面。
 
-web_assert() { grep -q '你好'; }   # 示例页的标题
+web_assert() { grep -qi 'reactive resume'; }   # 登录页和登录后的页面都带着应用名
 
-identity_check() { # 页面回显的就是网关注入的用户名；示例页不存数据，也不拿数据判断身份
-  local page
-  page="$(dweb /)" || { echo "页面失败：$page"; return 1; }
-  grep -qF "你好，$SMOKE_OWNER" <<<"$page" || { echo "页面没回显用户 $SMOKE_OWNER：$(head -c 120 <<<"$page")"; return 1; }
+_rr_curl() { # <方法> <完整地址> [curl 参数…]：带会话 jar 请求插件网页，输出响应体
+  local method="$1" url="$2"
+  shift 2
+  # 应用（Better Auth）对带 Cookie 的 POST 要求 Origin 属于可信来源；jar 里已有应用会话时必须带上，
+  # 否则 sign-in/social 报 MISSING_OR_NULL_ORIGIN。GET 带着它也无妨。
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -X "$method" -b "${SMOKE_JAR:?}" -c "${SMOKE_JAR:?}" \
+    -H "Origin: ${SMOKE_WEB_ORIGIN%/}" "$@" "$url"
 }
 
-# 数据：合并前要验证“升级/重装不丢用户数据”时写 data_write 和 data_check（两个都写才跑）：
-#   data_write 用随机标记写一条数据，把标记原样覆盖写进 $SMOKE_STATE（一个已建好的空文件，不是目录）；data_check 读回标记、去应用里找，
-#   找不到就打印看到了什么并返回非 0。
-# 应用不存用户数据时写 DATA_NA=1（两项记 N/A）。模板的示例页不存数据，所以这里是不适用。
-# 数据要写进插件容器时（Agent 插件的工作区标记等），容器名别自己拼：钩子契约里没有 SMOKE_SLUG，e2e 套件的
-# data_write 又跑在实例名导出之前，拼出来的名字缺段（No such container）；Bot 服务（清单声明了 bots）每个 Bot
-# 一组容器，名字还带 --<Bot 名> 后缀。按核心打的标签找，插件自带 smoke 和 e2e 套件两个运行环境都成立
-# （实例名没导出时按 SMOKE_BASE 的主机名第一段推）：
-#   _container() { # <插件 id> <服务名>：本实例里这个服务的容器
-#     local inst="${SMOKE_INSTANCE:-}" args=(--filter "label=wonton.plugin=$1" --filter "label=wonton.service=$2")
-#     if [[ -z "$inst" && -n "${SMOKE_BASE:-}" ]]; then
-#       inst="${SMOKE_BASE#http://}"; inst="${inst%%.*}"
-#     fi
-#     [[ -z "$inst" ]] || args+=(--filter "label=wonton.instance=${inst//-/}")
-#     docker ps --format '{{.Names}}' "${args[@]}" | head -1
-#   }
-export DATA_NA=1
+_rr_app_login() { # 建核心会话，再把 OIDC 链走完，$SMOKE_JAR 里落上应用自己的会话
+  local base="${SMOKE_BASE:?}" resp url final code
+  base="${base%/}"
+  # 核心会话：先在核心地址上换令牌，再走一次插件入口，让网关的会话 Cookie 落到插件主机上。
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+    --data-urlencode "token=$SMOKE_TOKEN" "$base/_wonton/login" || { echo "核心登录失败"; return 1; }
+  curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -L -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+    -H 'Accept: text/html' "${SMOKE_WEB_URL%/}/" || { echo "插件入口跳转失败"; return 1; }
+  # 应用的登录页要人点按钮，探针替它点：POST sign-in/social 拿 authorize 地址。
+  resp="$(_rr_curl POST "$SMOKE_WEB_ORIGIN/api/auth/sign-in/social" \
+    -H 'Content-Type: application/json' --data '{"provider":"custom","callbackURL":"/dashboard"}')" ||
+    { echo "sign-in/social 失败"; return 1; }
+  url="$(jq -r '.url // empty' <<<"$resp" 2>/dev/null)"
+  [[ -n "$url" && "$url" != null ]] || { echo "sign-in/social 没给跳转地址：$(head -c 200 <<<"$resp")"; return 1; }
+  [[ "$url" == /* ]] && url="$SMOKE_WEB_ORIGIN$url"
+  # 带核心会话跟 Hydra 和应用回调，最后落在应用里（或登录错误页）。
+  final="$(_rr_curl GET "$url" -H 'Accept: text/html' -L -o /dev/null -w '%{url_effective}')" ||
+    { echo "OIDC 链走不通：$url"; return 1; }
+  case "$final" in
+    */auth/error* | */auth/login*) echo "OIDC 回调后停在 $final"; return 1 ;;
+  esac
+  code="$(curl -sS --noproxy '*' -m "${SMOKE_WEB_MAX_TIME:-120}" -o /dev/null -w '%{http_code}' -b "$SMOKE_JAR" -c "$SMOKE_JAR" \
+    "$SMOKE_WEB_ORIGIN/api/auth/get-session")"
+  [[ "$code" == 200 ]] || { echo "get-session 返回 $code：应用的会话没建立"; return 1; }
+}
+
+identity_check() { # OIDC 建的账号要用主人的用户名和邮箱，说明网关注入的身份在应用里生效
+  local me
+  _rr_app_login || return 1
+  me="$(_rr_curl GET "$SMOKE_WEB_ORIGIN/api/auth/get-session")" || { echo "get-session 失败"; return 1; }
+  # 核心给应用的 OIDC email 声明是 <用户名>@wonton.internal（规范「sso: proxy」的身份变量表），
+  # 不是 WONTON_OWNER_EMAIL（那是给 notify 用的收件地址，实例域名）。
+  jq -e --arg u "${SMOKE_OWNER:-}" --arg e "${SMOKE_OWNER}@wonton.internal" \
+    '.user.username == $u and .user.email == $e' <<<"$me" >/dev/null 2>&1 ||
+    { echo "应用的账号不是主人（$SMOKE_OWNER / ${SMOKE_OWNER}@wonton.internal）：$(head -c 300 <<<"$me")"; return 1; }
+}
+
+# ---------- 数据钩子（e2e 六项冒烟用）----------
+# 简历存 PostgreSQL，随数据目录保留：data_write 建一份带随机标记的简历，data_check 读回名字。
+# OIDC 的会话 Cookie 在重装后还在（库没动），但每次现登录更省心：_rr_app_login 幂等。
+
+marker_file() { # SMOKE_STATE 是文件不是目录，标记放同名的 .d 目录里
+  local d="${SMOKE_STATE:-${TMPDIR:-/tmp}}.d"
+  mkdir -p "$d" && printf '%s' "$d/resume"
+}
+
+_rr_create_resume() { # <名字>：经应用自己的 REST 建一份简历，输出 id
+  local resp id
+  resp="$(_rr_curl POST "$SMOKE_WEB_ORIGIN/api/openapi/resumes" -H 'Content-Type: application/json' \
+    --data "$(jq -nc --arg n "$1" '{name:$n, tags:[]}')")" || { echo "建简历失败"; return 1; }
+  id="$(jq -r 'if type == "string" then . else (.id // .output // empty) end' <<<"$resp" 2>/dev/null)"
+  [[ -n "$id" && "$id" != null ]] || { echo "建简历没返回 id：$(head -c 300 <<<"$resp")"; return 1; }
+  printf '%s' "$id"
+}
+
+_rr_list_resumes() { _rr_curl GET "$SMOKE_WEB_ORIGIN/api/openapi/resumes"; }
+
+data_write() {
+  local marker id
+  _rr_app_login || { echo "登录不了应用"; return 1; }
+  marker="wonton-smoke-$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  id="$(_rr_create_resume "$marker")" || return 1
+  { printf '%s\n' "$id"; printf '%s\n' "$marker"; } >"$(marker_file)"
+}
+
+data_check() {
+  local id marker list
+  {
+    read -r id
+    read -r marker
+  } <"$(marker_file)" 2>/dev/null
+  [[ -n "${id:-}" && -n "${marker:-}" ]] || { echo "没有 data_write 留下的标记"; return 1; }
+  _rr_app_login || { echo "登录不了应用"; return 1; }
+  list="$(_rr_list_resumes)" || { echo "列不出简历：$list"; return 1; }
+  jq -e --arg id "$id" --arg n "$marker" \
+    'any(.[]?; .id == $id and .name == $n)' <<<"$list" >/dev/null 2>&1 ||
+    { echo "找不到 $marker（$id），看到的是：$(head -c 300 <<<"$list")"; return 1; }
+}
